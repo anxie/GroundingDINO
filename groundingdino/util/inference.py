@@ -97,6 +97,52 @@ def predict(
     return boxes, logits.max(dim=1)[0], phrases
 
 
+# Source: https://github.com/IDEA-Research/Grounded-Segment-Anything/issues/117#issuecomment-1636452377
+def predict_batch(
+        model,
+        images: torch.Tensor,
+        captions: List[str],
+        box_threshold: float,
+        text_threshold: float,
+        device: str = "cuda",
+        remove_combined: bool = False
+) -> Tuple[torch.Tensor, torch.Tensor, List[str]]:
+    captions = [preprocess_caption(caption=c) for c in captions]
+
+    model = model.to(device)
+    images = torch.stack(images)
+    images = images.to(device)
+
+    with torch.no_grad():
+        outputs = model(images, captions=captions)
+
+    prediction_logits = outputs["pred_logits"].cpu().sigmoid()  # prediction_logits.shape = (bs, nq, 256)
+    prediction_boxes = outputs["pred_boxes"].cpu()  # prediction_boxes.shape = (bs, nq, 4)
+
+    logits_res = []
+    boxs_res = []
+    phrases_list = []
+    tokenizer = model.tokenizer
+    for ub_logits, ub_boxes, ub_captions in zip(prediction_logits, prediction_boxes, captions):
+        mask = ub_logits.max(dim=1)[0] > box_threshold
+        logits = ub_logits[mask]  # logits.shape = (n, 256)
+        boxes = ub_boxes[mask]  # boxes.shape = (n, 4)
+        logits_res.append(logits.max(dim=1)[0])
+        boxs_res.append(boxes)
+
+        tokenized = tokenizer(ub_captions)
+        phrases = [
+            get_phrases_from_posmap(logit > text_threshold, tokenized, tokenizer).replace('.', '')
+            for logit
+            in logits
+        ]
+        phrases_list.append(phrases)
+    print('bboxs:', boxs_res)
+    print('logits:', logits_res)
+    print('phrases:', phrases_list)
+    return boxs_res, logits_res, phrases_list
+
+
 def annotate(image_source: np.ndarray, boxes: torch.Tensor, logits: torch.Tensor, phrases: List[str]) -> np.ndarray:
     h, w, _ = image_source.shape
     boxes = boxes * torch.Tensor([w, h, w, h])
